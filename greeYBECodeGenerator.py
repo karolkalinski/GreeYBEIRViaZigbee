@@ -6,7 +6,6 @@ import tuya
 POWER_OFF = 0
 POWER_ON = 1
 MODE_AUTO, MODE_HEAT, MODE_COOL, MODE_DRY, MODE_FAN = range(5)
-FAN_AUTO, FAN_1, FAN_2, FAN_3, FAN_TURBO = range(5)
 VDIR_AUTO, VDIR_SWING, VDIR_UP, VDIR_MUP, VDIR_MIDDLE, VDIR_MDOWN, VDIR_DOWN = range(7)
 HDIR_AUTO, HDIR_SWING, HDIR_LEFT, HDIR_MLEFT, HDIR_MIDDLE, HDIR_MRIGHT, HDIR_RIGHT = range(7)
 
@@ -18,24 +17,27 @@ GREE_AIRCON1_MODE_COOL = 3
 GREE_AIRCON1_MODE_DRY = 4
 GREE_AIRCON1_MODE_FAN = 5
 
-GREE_AIRCON1_FAN_AUTO = 0x00
-GREE_AIRCON1_FAN1 = 1
-GREE_AIRCON1_FAN2 = 2
-GREE_AIRCON1_FAN3 = 3
-GREE_AIRCON1_FAN_TURBO = 0x50
+
+GREE_AIRCON_FAN_AUTO =  0x00 # Fan speed
+GREE_AIRCON_FAN1     = 0x10 # * low
+GREE_AIRCON_FAN2     = 0x20 # * med
+GREE_AIRCON_FAN_HIGH     = 0x30 # * high
+GREE_AIRCON_FAN_TURBO    = 0x80 # * turbo mode
+
+GREE_AIRCON1_FAN_X = 0x60
+GREE_AIRCON1_FAN_Y = 0x10
 
 GREE_VDIR_AUTO = 0
 GREE_HDIR_AUTO = 0
 
 
-def convert_params(powerModeCmd, operatingModeCmd, fanSpeedCmd, temperatureCmd,
+def convert_params(powerModeCmd, operatingModeCmd, fanSpeed, temperatureCmd,
                    swingVCmd, swingHCmd, turboMode, iFeelMode):
     """Convert human command parameters into encoded IR parameters."""
 
     # Defaults
     powerMode = GREE_AIRCON1_POWER_ON
     operatingMode = GREE_AIRCON1_MODE_HEAT
-    fanSpeed = GREE_AIRCON1_FAN_AUTO
     temperature = 21
     swingV = GREE_VDIR_AUTO
     swingH = GREE_HDIR_AUTO
@@ -53,18 +55,10 @@ def convert_params(powerModeCmd, operatingModeCmd, fanSpeedCmd, temperatureCmd,
             operatingMode = GREE_AIRCON1_MODE_COOL
         elif operatingModeCmd == MODE_DRY:
             operatingMode = GREE_AIRCON1_MODE_DRY
-            fanSpeedCmd = FAN_1
+            fanSpeed = GREE_AIRCON1_FAN_AUTO 
         elif operatingModeCmd == MODE_FAN:
             operatingMode = GREE_AIRCON1_MODE_FAN
 
-    # Fan speed
-    fanSpeed = {
-        FAN_AUTO: GREE_AIRCON1_FAN_AUTO,
-        FAN_1: GREE_AIRCON1_FAN1,
-        FAN_2: GREE_AIRCON1_FAN2,
-        FAN_3: GREE_AIRCON1_FAN3,
-        FAN_TURBO: GREE_AIRCON1_FAN_TURBO
-    }.get(fanSpeedCmd, GREE_AIRCON1_FAN_AUTO)
 
     # Vertical swing
     swingV = {
@@ -314,6 +308,47 @@ def send_buffer(IR, buffer, timings):
     return mystdout.getvalue()
 
 
+# Sends current sensed temperatures, YAC remotes/supporting units only
+
+def sendIFeel(ir, current_temperature):
+    gree_template = [0x00, 0x00]
+
+    gree_template[0] = current_temperature
+    gree_template[1] = 0xA5
+
+    # 38 kHz PWM frequency
+    ir.setFrequency(38)
+
+    old_stdout = sys.stdout
+    sys.stdout = mystdout = StringIO()
+
+    # Send Header mark
+    ir.mark(timings["ifeel_hdr_mark"])
+    ir.space(timings["ifeel_hdr_space"])
+
+    # Send payload
+    ir.sendIRbyte(
+        gree_template[0],
+        timings["ifeel_bit_mark"],
+        timings["zero_space"],
+        timings["one_space"]
+    )
+
+    ir.sendIRbyte(
+        gree_template[1],
+        timings["ifeel_bit_mark"],
+        timings["zero_space"],
+        timings["one_space"]
+    )
+
+    # End mark
+    ir.mark(timings["ifeel_bit_mark"])
+    ir.space(0)
+
+    sys.stdout = old_stdout
+    return mystdout.getvalue()
+
+
 class MockIRSender:
     def setFrequency(self, freq):
         print(f"[IR] Set frequency to {freq} kHz")
@@ -353,12 +388,6 @@ class MockIRSender:
             send_byte >>= 1
 
 
-def first_non_matching(arr1, arr2):
-    for i, (a, b) in enumerate(zip(arr1, arr2)):
-        if a != b:
-            return i, a, b
-    return None  # All matched (up to shortest length)
-
 # Example timings dictionary, similar to C++ struct
 timings = {
     "hdr_mark": 9000,
@@ -367,6 +396,9 @@ timings = {
     "one_space": 1643,
     "zero_space": 510,
     "msg_space": 20000,
+    "ifeel_hdr_mark": 6000,
+    "ifeel_hdr_space": 3000,
+    "ifeel_bit_mark": 650
 }
 
 # Simulate buffer of 8 bytes (one qframe)
@@ -375,12 +407,12 @@ timings = {
 
 
 params = convert_params(
-    powerModeCmd=POWER_ON, operatingModeCmd=MODE_HEAT, fanSpeedCmd=FAN_AUTO,
-    temperatureCmd=22, swingVCmd=VDIR_AUTO, swingHCmd=HDIR_AUTO,
+    powerModeCmd=POWER_ON, operatingModeCmd=MODE_HEAT, fanSpeed=GREE_AIRCON_FAN_HIGH,
+    temperatureCmd=21, swingVCmd=VDIR_SWING, swingHCmd=HDIR_SWING,
     turboMode=False, iFeelMode=False,
 )
 
-frame = generate_command_yap(**params, turboMode=False, iFeelMode=False, light=False, xfan=False, health=False, valve=False, sthtMode=False, enableWiFi=False)
+frame = generate_command_yap(**params, turboMode=False, iFeelMode=True, light=False, xfan=False, health=False, valve=False, sthtMode=False, enableWiFi=False)
 frame = calculate_checksum(frame)
 
 
@@ -394,4 +426,10 @@ print(tuya.encode_ir(lenghts))
 
 print("IR frame:", [x for x in frame])
 
+iFeelLenghts = sendIFeel(IR, 19)
+sourceIFeelSplit = [int(x) for x in iFeelLenghts.rstrip(",").split(",")]
+sourceIFeel=[50 if x==0 else x for x in sourceIFeelSplit]
 
+print("IR singnal legnths IFeel: ", sourceIFeel)
+
+print("IR Code: ", tuya.encode_ir(sourceIFeel))
